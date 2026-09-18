@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Drive to Grandkids</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+  :root{
+    --ink:#2b2620;
+    --cream:#f7f2e9;
+    --amber:#e0a840;
+    --line:rgba(43,38,32,0.18);
+  }
+  html,body{margin:0;padding:0;height:100%;background:var(--ink);overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--cream);}
+  #remoteVideo{width:100%;height:calc(100% - 196px);object-fit:cover;background:#000;display:block;}
+  #localVideo{position:fixed;top:14px;right:14px;width:84px;border-radius:10px;
+    border:2px solid var(--cream);z-index:10;box-shadow:0 2px 10px rgba(0,0,0,.4);}
+  #status{position:fixed;top:14px;left:14px;font-size:13px;background:rgba(0,0,0,.45);
+    padding:5px 10px;border-radius:20px;z-index:10;letter-spacing:.2px;}
+
+  #controls{position:fixed;bottom:0;left:0;width:100%;height:196px;background:#1c1812;
+    display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);
+    gap:8px;padding:14px;box-sizing:border-box;}
+  .ctrlBtn{background:#332c22;color:var(--cream);border:1px solid var(--line);border-radius:14px;
+    font-size:26px;touch-action:manipulation;user-select:none;display:flex;align-items:center;justify-content:center;}
+  .ctrlBtn:active{background:var(--amber);color:var(--ink);}
+  #stopBtn{background:#5c2323;}
+  #stopBtn:active{background:#a33;}
+
+  #idBox{position:fixed;inset:0;background:var(--cream);color:var(--ink);z-index:20;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px;
+    box-sizing:border-box;text-align:center;}
+  #idBox h1{font-size:22px;margin:0 0 4px;font-weight:600;}
+  #idBox p{margin:0;font-size:15px;opacity:.75;max-width:280px;line-height:1.4;}
+  #peerIdInput{font-size:18px;padding:12px 14px;width:240px;border:1px solid var(--line);
+    border-radius:10px;background:#fff;color:var(--ink);text-align:center;}
+  #startBtn{font-size:17px;padding:13px 28px;border:none;border-radius:10px;background:var(--ink);
+    color:var(--cream);font-weight:600;}
+  #startBtn:active{opacity:.8;}
+  #errMsg{color:#a33;font-size:13px;min-height:16px;}
+</style>
+</head>
+<body>
+  <div id="idBox">
+    <h1>Drive to the grandkids</h1>
+    <p>Enter the robot's ID (given to you once) and tap connect.</p>
+    <input id="peerIdInput" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <button id="startBtn">Connect</button>
+    <div id="errMsg"></div>
+  </div>
+
+  <video id="remoteVideo" autoplay playsinline></video>
+  <video id="localVideo" autoplay playsinline muted></video>
+  <div id="status">Not connected</div>
+
+  <div id="controls">
+    <div></div><button class="ctrlBtn" data-cmd="forward">▲</button><div></div>
+    <button class="ctrlBtn" data-cmd="left">◀</button>
+    <button class="ctrlBtn" id="stopBtn" data-cmd="stop">■</button>
+    <button class="ctrlBtn" data-cmd="right">▶</button>
+    <div></div><button class="ctrlBtn" data-cmd="backward">▼</button><div></div>
+  </div>
+
+<script>
+const remoteVideo = document.getElementById('remoteVideo');
+const localVideo  = document.getElementById('localVideo');
+const statusEl    = document.getElementById('status');
+const idBox       = document.getElementById('idBox');
+const peerIdInput = document.getElementById('peerIdInput');
+const startBtn    = document.getElementById('startBtn');
+const errMsg      = document.getElementById('errMsg');
+
+peerIdInput.value = localStorage.getItem('robotTargetId') || 'family-robot-01';
+
+let peer, conn, localStream, cmdInterval;
+
+startBtn.addEventListener('click', async () => {
+  const targetId = peerIdInput.value.trim();
+  if (!targetId) return;
+  localStorage.setItem('robotTargetId', targetId);
+  idBox.style.display = 'none';
+  statusEl.textContent = 'Starting camera…';
+
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    localVideo.srcObject = localStream;
+  } catch (err) {
+    idBox.style.display = 'flex';
+    errMsg.textContent = 'Camera/mic error: ' + err.message;
+    return;
+  }
+
+  peer = new Peer();
+
+  peer.on('open', () => {
+    statusEl.textContent = 'Calling robot…';
+
+    const call = peer.call(targetId, localStream);
+    call.on('stream', stream => {
+      remoteVideo.srcObject = stream;
+      statusEl.textContent = 'Connected';
+    });
+    call.on('close', () => { statusEl.textContent = 'Call ended'; });
+
+    conn = peer.connect(targetId);
+    conn.on('open', () => { statusEl.textContent = 'Connected'; sendCmd('stop'); });
+  });
+
+  peer.on('error', err => {
+    idBox.style.display = 'flex';
+    errMsg.textContent = 'Connection error: ' + err.type;
+  });
+});
+
+function sendCmd(cmd){
+  if (conn && conn.open) conn.send({ cmd });
+}
+
+document.querySelectorAll('.ctrlBtn').forEach(btn => {
+  const cmd = btn.dataset.cmd;
+  const start = e => {
+    e.preventDefault();
+    sendCmd(cmd);
+    if (cmd !== 'stop') {
+      clearInterval(cmdInterval);
+      cmdInterval = setInterval(() => sendCmd(cmd), 300); // keep-alive while held
+    }
+  };
+  const stop = e => { e.preventDefault(); clearInterval(cmdInterval); sendCmd('stop'); };
+  btn.addEventListener('touchstart', start, {passive:false});
+  btn.addEventListener('touchend', stop);
+  btn.addEventListener('mousedown', start);
+  btn.addEventListener('mouseup', stop);
+  btn.addEventListener('mouseleave', stop);
+});
+</script>
+</body>
+</html>
